@@ -1,0 +1,93 @@
+
+from huggingface_hub import notebook_login
+from transformers import TFAutoModelForCausalLM, AutoTokenizer, create_optimizer, AdamWeightDecay
+from datasets import load_dataset
+from transformers.keras_callbacks import PushToHubCallback
+from tensorflow.keras.callbacks import TensorBoard
+import tensorflow as tf
+import math
+
+import torch
+from huggingface_hub import login
+
+
+notebook_login()
+
+dataset = load_dataset("bookcorpusopen", num_proc=4, split='train[:40]')
+dataset = dataset.train_test_split(test_size=0.3)
+
+model_checkpoint = "facebook/opt-350m" # or "gpt2-medium"
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True, num_proc=4)
+
+def tokenize_function(examples):
+    return tokenizer(examples["text"])
+
+tokenized_dataset = dataset.map(tokenize_function, batched=True, num_proc=4, remove_columns=["text", "title"])
+
+block_size = 128
+
+def group_texts(examples):
+    concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    total_length = len(concatenated_examples[list(examples.keys())[0]])
+    total_length = (total_length // block_size) * block_size
+    result = {
+        k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+        for k, t in concatenated_examples.items()
+    }
+    result["labels"] = result["input_ids"].copy()
+    return result
+
+lm_dataset = tokenized_dataset.map(
+    group_texts,
+    batched=True,
+    batch_size=1000,
+    num_proc=4,
+)
+
+model = TFAutoModelForCausalLM.from_pretrained(model_checkpoint)
+optimizer = AdamWeightDecay(lr=2e-5, weight_decay_rate=0.01)
+model.compile(optimizer=optimizer, jit_compile=True)
+
+train_set = model.prepare_tf_dataset(
+    lm_dataset["train"],
+    shuffle=True,
+    batch_size=16,
+)
+
+validation_set = model.prepare_tf_dataset(
+    lm_dataset["test"],
+    shuffle=False,
+    batch_size=16,
+)
+
+model_name = model_checkpoint.split("/")[-1]
+push_to_hub_model_id = f"{model_name}test01_finetune"
+
+tensorboard_callback = TensorBoard(log_dir="./clm_model_save/logs")
+
+push_to_hub_callback = PushToHubCallback(
+    output_dir="./clm_model_save",
+    tokenizer=tokenizer,
+    hub_model_id=push_to_hub_model_id,
+)
+
+callbacks = [tensorboard_callback, push_to_hub_callback]
+
+model.fit(train_set, validation_data=validation_set, epochs=1, callbacks=callbacks)
+
+eval_loss = model.evaluate(validation_set)
+
+print(f"Perplexity: {math.exp(eval_loss):.2f}")
+
+checkpoint = "Serdarcekinmez/test01_finetune"
+
+model = TFAutoModelForCausalLM.from_pretrained(checkpoint)
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+test_sentence = "Do you bleed ?"
+tokenized = tokenizer(test_sentence, return_tensors="tf")
+outputs = model.generate(**tokenized, do_sample=True, max_length=50, top_k=50, top_p=0.95, num_return_sequences=3)
+
+print(tokenizer.decode(outputs[0]))
+print(tokenizer.decode(outputs[1]))
+print(tokenizer.decode(outputs[2]))
