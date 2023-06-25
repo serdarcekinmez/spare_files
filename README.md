@@ -1,5 +1,5 @@
 <<<<<<< HEAD
-# story_teller
+# spare_files_
 Jedha story_teller project
 
 As many of generators and fine_tuning files have been used in 'Stroy Teller' project, most of them they are stored on this Github page for future uses or future model comparisons. 
